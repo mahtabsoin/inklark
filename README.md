@@ -112,8 +112,8 @@ The stored-vault key and request format retain their original `fillsign` identif
 ## Development checks
 
 ```sh
-npm test
 npm run build
+npm test
 npx playwright install chromium
 npm run test:browser
 ```
