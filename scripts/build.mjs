@@ -23,12 +23,12 @@ const workerName = `pdf.worker-${createHash("sha256").update(worker).digest("hex
 await writeFile(`dist/assets/${workerName}`, worker);
 const result = await build({
   absWorkingDir: process.cwd(),
-  entryPoints: [path.resolve("src/app.js")],
+  entryPoints: [path.resolve("src/app.js"), path.resolve("src/sign-app.js")],
   tsconfigRaw: { compilerOptions: {} },
   bundle: true,
   format: "esm",
   outdir: "dist/assets",
-  entryNames: "app-[hash]",
+  entryNames: "[name]-[hash]",
   assetNames: "[name]-[hash]",
   minify: true,
   target: "es2022",
@@ -89,13 +89,20 @@ const result = await build({
     },
   ],
 });
-const outputs = Object.keys(result.metafile.outputs),
-  js = outputs.find((f) => f.endsWith(".js")),
-  css = outputs.find((f) => f.endsWith(".css"));
-let html = await readFile("index.html", "utf8");
-html = html.replace(
-  '<script type="module" src="/src/app.js"></script>',
-  `<link rel="stylesheet" href="./${css.replace(/^dist\//, "")}">\n  <script type="module" src="./${js.replace(/^dist\//, "")}"></script>`,
-);
-await writeFile("dist/index.html", html);
-console.log(`Built ${js} and ${css}.`);
+const outputs = Object.keys(result.metafile.outputs);
+for (const [entry, target] of [
+  ["src/app.js", "index.html"],
+  ["src/sign-app.js", "sign.html"],
+]) {
+  const js = outputs.find((f) =>
+    result.metafile.outputs[f].entryPoint?.endsWith(entry),
+  );
+  const css = result.metafile.outputs[js].cssBundle;
+  let html = await readFile("index.html", "utf8");
+  html = html.replace(
+    '<script type="module" src="/src/app.js"></script>',
+    `<link rel="stylesheet" href="./${css.replace(/^dist\//, "")}">\n  <script type="module" src="./${js.replace(/^dist\//, "")}"></script>`,
+  );
+  await writeFile(`dist/${target}`, html);
+  console.log(`Built ${target}: ${js}.`);
+}

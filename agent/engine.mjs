@@ -292,6 +292,23 @@ export async function localServer(
       "Content-Security-Policy",
       "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; worker-src 'self' blob:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'none'",
     );
+    // WebAuthn requires a domain RP ID. Serve public signing assets through
+    // localhost too; privileged broker routes keep their exact original origin.
+    const previewHost = `localhost:${new URL(appOrigin).port}`;
+    const previewPath = new URL(req.url, appOrigin).pathname;
+    if (
+      req.method === "GET" &&
+      req.headers.host === previewHost &&
+      (!req.headers.origin || req.headers.origin === `http://${previewHost}`) &&
+      (previewPath === "/sign.html" ||
+        previewPath === "/icon.svg" ||
+        previewPath === "/manifest.webmanifest" ||
+        previewPath.startsWith("/assets/") ||
+        previewPath.startsWith("/pdf-assets/"))
+    ) {
+      await serveFile(req, res);
+      return;
+    }
     if (
       req.headers.host !== new URL(appOrigin).host ||
       (req.headers.origin && req.headers.origin !== appOrigin)

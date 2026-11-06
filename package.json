@@ -11,6 +11,7 @@
     "mcp": "node agent/mcp.mjs",
     "test": "node --test tests/*.test.mjs",
     "test:browser": "node tests/browser.mjs",
+    "test:device": "node tests/device-browser.mjs",
     "check:public": "node scripts/check-public.mjs"
   },
   "keywords": [],

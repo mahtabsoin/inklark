@@ -1,6 +1,8 @@
 # Agent-driven signing journey
 
-This is the target for the next release. The current app provides local MCP preparation, a browser editor, an encrypted signature vault, and human-approved PDF export. Remote MCP, encrypted request delivery, passkey approval, and a verified physical-phone journey are not implemented yet.
+This is the target for the next release. The existing editor provides local MCP preparation, an encrypted signature vault, and human-approved PDF export. Remote MCP, durable encrypted request delivery, and a verified physical-phone journey remain to be implemented.
+
+See [the implementation status](BUILD-STATUS.md) for current evidence. The new device-approval preview implements local WebAuthn signing separately from the existing editor; cloud delivery and physical-device verification remain pending.
 
 ## Product decision
 

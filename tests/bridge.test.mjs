@@ -17,6 +17,13 @@ test("local handoff excludes secrets from agent results and enforces origin, tok
     const token = new URL(browserUrl).hash.slice("#request=".length),
       auth = { Authorization: `Bearer ${token}` };
     assert.ok(token);
+    const previewOrigin = session.origin.replace("127.0.0.1", "localhost");
+    assert.equal((await fetch(previewOrigin + "/sign.html")).status, 200);
+    assert.equal(
+      (await fetch(previewOrigin + "/request", { headers: auth })).status,
+      403,
+    );
+    assert.equal((await fetch(previewOrigin + "/setup")).status, 403);
     assert.equal(JSON.stringify(session).includes(token), false);
     assert.equal((await fetch(session.origin + "/request")).status, 403);
     assert.equal(
