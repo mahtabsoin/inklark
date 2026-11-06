@@ -3,7 +3,11 @@ import { createServer } from "node:http";
 import { readFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import assert from "node:assert/strict";
-import { verifyApprovalRecord } from "../src/device.js";
+import {
+  verifyApprovalRecord,
+  verifyDeviceRegistration,
+  verifySavedApprovalRecord,
+} from "../src/device.js";
 import { randomId, sealRequest } from "../src/trust.js";
 
 const server = createServer(async (request, response) => {
@@ -78,6 +82,27 @@ try {
     return device.publicDevice(p);
   });
   assert.equal(profile.name, "Jane Example");
+  const registration = await page.evaluate(async () =>
+    device.deviceRegistration(await device.getDevice()),
+  );
+  assert.equal(
+    (await verifyDeviceRegistration(registration, origin)).deviceId,
+    profile.deviceId,
+  );
+  for (const change of [
+    { name: "Another Person" },
+    { appearanceRevision: randomId() },
+    { deliveryPublicKey: { ...profile.deliveryPublicKey, x: randomId() } },
+    { credential: { ...registration.device.credential, id: randomId() } },
+  ])
+    await assert.rejects(
+      () =>
+        verifyDeviceRegistration(
+          { ...registration, device: { ...registration.device, ...change } },
+          origin,
+        ),
+      /enrollment/,
+    );
   assert.equal(JSON.stringify(profile).includes("privateKey"), false);
   await assert.rejects(
     () => page.evaluate(() => device.enrollDevice("Another Person")),
@@ -179,6 +204,118 @@ try {
     profile.credential,
     secondIntent,
     origin,
+  );
+  const storedProof = await page.evaluate(
+    async (nonce) => (await device.getApprovalRecord(nonce)).record,
+    secondIntent.nonce,
+  );
+  assert.deepEqual(storedProof, secondProof);
+  const updatedProfile = await page.evaluate(async () =>
+    device.publicDevice(await device.getDevice()),
+  );
+  assert.equal(
+    (
+      await verifySavedApprovalRecord(
+        storedProof,
+        updatedProfile.credential,
+        secondIntent,
+        origin,
+      )
+    ).freshAuthorization,
+    false,
+  );
+  const interruptedIntent = await page.evaluate(
+    async (hashes) =>
+      device.makeApprovalIntent(hashes, await device.getDevice()),
+    { ...hashes, requestId: randomId() },
+  );
+  const interrupted = await page.evaluate(async (intent) => {
+    const original = IDBObjectStore.prototype.put;
+    IDBObjectStore.prototype.put = function (...args) {
+      const r = original.apply(this, args);
+      if (
+        this.name === "device" &&
+        this.transaction.objectStoreNames.contains("approvals")
+      )
+        this.transaction.abort();
+      return r;
+    };
+    try {
+      await device.approveIntent(intent);
+      return false;
+    } catch {
+      return true;
+    } finally {
+      IDBObjectStore.prototype.put = original;
+    }
+  }, interruptedIntent);
+  assert.ok(interrupted);
+  assert.equal(
+    await page.evaluate(
+      async (nonce) => !!(await device.getApprovalRecord(nonce)),
+      interruptedIntent.nonce,
+    ),
+    false,
+    "Storage failure must not consume the approval",
+  );
+  await page.evaluate(
+    (intent) => device.approveIntent(intent),
+    interruptedIntent,
+  );
+  const racing = await page.evaluate(
+    async (hashes) => {
+      const p = await device.getDevice();
+      const a = await device.makeApprovalIntent(hashes, p),
+        b = await device.makeApprovalIntent(hashes, p);
+      const original = navigator.credentials.get.bind(navigator.credentials);
+      let queue = Promise.resolve(),
+        number = 0,
+        release;
+      const wait = new Promise((resolve) => {
+        release = resolve;
+      });
+      navigator.credentials.get = async (options) => {
+        const n = ++number;
+        const operation = queue.then(() => original(options));
+        queue = operation.catch(() => {});
+        const response = await operation;
+        if (n === 1) await wait;
+        return response;
+      };
+      try {
+        const first = device.approveIntent(a),
+          second = device.approveIntent(b).then(
+            (r) => {
+              release();
+              return r;
+            },
+            (e) => {
+              release();
+              throw e;
+            },
+          );
+        const records = await Promise.all([first, second]);
+        const { unbase64url } = await import("/src/trust.js");
+        const counters = records.map((r) => {
+          const bytes = unbase64url(r.assertion.response.authenticatorData);
+          return new DataView(bytes.buffer, bytes.byteOffset + 33, 4).getUint32(
+            0,
+          );
+        });
+        return {
+          counter: (await device.getDevice()).credential.counter,
+          counters,
+        };
+      } finally {
+        navigator.credentials.get = original;
+      }
+    },
+    { ...hashes, requestId: randomId() },
+  );
+  assert.equal(
+    racing.counter,
+    Math.max(...racing.counters),
+    "Concurrent approvals must preserve the newest signature counter",
   );
   const mutable = await page.evaluate(
     async (hashes) =>

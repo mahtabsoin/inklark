@@ -10,6 +10,8 @@ The screenshot uses a sample form and synthetic test data.
 
 Read [the design decisions](docs/DESIGN.md) for the reasoning behind local storage, human approval, and the agent boundary.
 
+An experimental [device-authenticated signing preview](docs/BUILD-STATUS.md) is in development for the agent-driven journey. Its local and virtual-authenticator tests pass; hosted cloud delivery and physical-phone verification are still pending. The original editor remains available during development.
+
 ## Run locally
 
 Use Node.js 24 or newer. Install dependencies once, then build the bundled app:

@@ -13,6 +13,8 @@ import {
   sealRequest,
   openRequest,
   verifyApproval,
+  verifyApprovalEvidence,
+  MAX_DELIVERY_BYTES,
   approvalChallenge,
   es256Signature,
 } from "../src/trust.js";
@@ -124,7 +126,7 @@ async function assertionFixture(overrides = {}) {
     ...overrides.client,
   };
   const clientBytes = utf8(JSON.stringify(client));
-  const data = new Uint8Array(37);
+  const data = new Uint8Array(37 + (overrides.trailingBytes || 0));
   data.set(unbase64url(await digest(utf8(overrides.rpId || expected.rpId))));
   data[32] = overrides.flags ?? 5;
   new DataView(data.buffer).setUint32(33, overrides.counter ?? 1);
@@ -185,6 +187,8 @@ test("ES256 approval verifies a real signature and enforces user verification", 
     { flags: 4 },
     { flags: 5 | 0x40 },
     { flags: 5 | 0x10 },
+    { flags: 5 | 0x80 },
+    { trailingBytes: 1 },
     { client: { crossOrigin: true } },
     { client: { type: "webauthn.create" } },
     { client: { origin: "https://attacker.example" } },
@@ -204,6 +208,76 @@ test("ES256 approval verifies a real signature and enforces user verification", 
   };
   await assert.rejects(() =>
     verifyApproval(badSignature, credential, expected),
+  );
+  await assert.rejects(
+    () =>
+      verifyApproval(
+        {
+          ...assertion,
+          response: { ...assertion.response, userHandle: randomId() },
+        },
+        credential,
+        expected,
+      ),
+    /handle/,
+  );
+  await assert.rejects(
+    () =>
+      verifyApproval(
+        assertion,
+        { ...credential, backupEligible: true },
+        expected,
+      ),
+    /verification/,
+  );
+  const zero = await assertionFixture({ counter: 0 });
+  assert.equal(
+    (await verifyApproval(zero.assertion, zero.credential, zero.expected))
+      .counter,
+    0,
+  );
+});
+test("historical evidence verifies signature binding without granting fresh authorization", async () => {
+  const { assertion, credential, expected } = await assertionFixture();
+  await assert.rejects(() =>
+    verifyApproval(
+      assertion,
+      { ...credential, counter: 100 },
+      { ...expected, expiresAt: 0 },
+    ),
+  );
+  const evidence = await verifyApprovalEvidence(
+    assertion,
+    { ...credential, counter: 100 },
+    { ...expected, expiresAt: 0 },
+  );
+  assert.equal(evidence.signatureVerified, true);
+  assert.equal(evidence.freshAuthorization, false);
+});
+test("delivery accepts a base64-sized 30 MiB PDF and rejects oversized plaintext before encryption", async () => {
+  const device = await createDeliveryKey();
+  const route = {
+    version: 1,
+    deviceId: randomId(),
+    requestId: randomId(),
+    expiresAt: Date.now() + 60000,
+  };
+  const payload = { document: "A".repeat(40 * 1024 * 1024) };
+  const envelope = await sealRequest(
+    payload,
+    await publicDeliveryKey(device.publicKey),
+    route,
+  );
+  const opened = await openRequest(envelope, device.privateKey, route.deviceId);
+  assert.equal(opened.document.length, payload.document.length);
+  await assert.rejects(
+    () =>
+      sealRequest(
+        { document: "A".repeat(MAX_DELIVERY_BYTES) },
+        device.publicKey,
+        route,
+      ),
+    /delivery limit/,
   );
 });
 test("ES256 signature decoding refuses malformed and noncanonical DER", () => {

@@ -9,6 +9,7 @@ import {
   fingerprint,
   canonical,
   verifyApproval,
+  verifyApprovalEvidence,
   approvalChallenge,
 } from "./trust.js";
 
@@ -48,8 +49,53 @@ async function transaction(storeName, mode, run) {
 }
 export const getDevice = () =>
   transaction("device", "readonly", (s) => s.get(KEY));
-async function saveDevice(profile) {
-  await transaction("device", "readwrite", (s) => s.put(profile, KEY));
+export const getApprovalRecord = (nonce) =>
+  transaction("approvals", "readonly", (s) => s.get(nonce));
+async function commitApproval(profile, record, verified) {
+  const db = await database();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(["device", "approvals"], "readwrite");
+      const devices = tx.objectStore("device"),
+        approvals = tx.objectStore("approvals");
+      const current = devices.get(KEY);
+      current.onsuccess = () => {
+        const stored = current.result;
+        if (
+          !stored ||
+          canonical(enrollmentDevice(stored)) !==
+            canonical(enrollmentDevice(profile))
+        ) {
+          tx.abort();
+          return;
+        }
+        approvals.add({
+          nonce: record.intent.nonce,
+          expiresAt: record.intent.expiresAt,
+          record,
+        });
+        devices.put(
+          {
+            ...stored,
+            credential: {
+              ...stored.credential,
+              counter: Math.max(stored.credential.counter, verified.counter),
+            },
+          },
+          KEY,
+        );
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = tx.onabort = () =>
+        reject(
+          Error(
+            "The approval could not be saved or was already completed. Nothing new was signed.",
+          ),
+        );
+    });
+  } finally {
+    db.close();
+  }
 }
 export function deviceSupported() {
   return !!(
@@ -156,19 +202,15 @@ export async function enrollDevice(name) {
   };
   // Registration is un-attested. Require proof of possession of the returned
   // key before saving it, instead of trusting a client-supplied public key.
-  const enrollmentChallenge = await fingerprint({
-    purpose: "inklark-enroll-v1",
-    deviceId,
-    userHandle,
-    publicKey: profile.credential.publicKey,
-    nonce: randomId(),
-  });
-  const { verified } = await authenticate(
+  const intent = enrollmentIntent(profile);
+  const enrollmentChallenge = await fingerprint(intent);
+  const { verified, assertion } = await authenticate(
     profile,
     enrollmentChallenge,
-    Date.now() + 60000,
+    intent.expiresAt,
   );
   profile.credential.counter = verified.counter;
+  profile.enrollment = { intent, assertion };
   // A concurrent enrollment must not silently replace an existing profile.
   await transaction("device", "readwrite", (s) => s.add(profile, KEY));
   return profile;
@@ -181,6 +223,72 @@ export function publicDevice(profile) {
     credential: { ...profile.credential },
     deliveryPublicKey: profile.deliveryPublicKey,
     appearanceRevision: profile.appearanceRevision,
+  };
+}
+export function enrollmentDevice(profile) {
+  const { counter, ...credential } = profile.credential;
+  return {
+    version: 1,
+    deviceId: profile.deviceId,
+    name: profile.name,
+    appearanceRevision: profile.appearanceRevision,
+    credential,
+    deliveryPublicKey: profile.deliveryPublicKey,
+  };
+}
+export function enrollmentIntent(profile) {
+  return {
+    purpose: "inklark-enroll-v1",
+    device: enrollmentDevice(profile),
+    nonce: randomId(),
+    expiresAt: Date.now() + 120000,
+  };
+}
+export function deviceRegistration(profile) {
+  return { device: enrollmentDevice(profile), proof: profile.enrollment };
+}
+export async function verifyDeviceRegistration(registration, origin) {
+  const { device, proof } = registration;
+  if (
+    !device ||
+    device.version !== 1 ||
+    !validHash(device.deviceId) ||
+    !validHash(device.appearanceRevision) ||
+    typeof device.name !== "string" ||
+    !device.name.trim() ||
+    device.name.length > 80 ||
+    !proof ||
+    proof.intent?.purpose !== "inklark-enroll-v1" ||
+    !validHash(proof.intent.nonce) ||
+    canonical(proof.intent.device) !== canonical(device)
+  )
+    throw Error("Invalid device enrollment.");
+  const verified = await verifyApproval(
+    proof.assertion,
+    { ...device.credential, counter: 0 },
+    {
+      challenge: await fingerprint(proof.intent),
+      expiresAt: proof.intent.expiresAt,
+      origin,
+      rpId: new URL(origin).hostname,
+    },
+  );
+  if (
+    device.deliveryPublicKey?.d ||
+    device.deliveryPublicKey?.kty !== "EC" ||
+    device.deliveryPublicKey?.crv !== "P-256"
+  )
+    throw Error("Invalid delivery public key.");
+  await crypto.subtle.importKey(
+    "jwk",
+    device.deliveryPublicKey,
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    [],
+  );
+  return {
+    ...device,
+    credential: { ...device.credential, counter: verified.counter },
   };
 }
 function validHash(value) {
@@ -236,17 +344,14 @@ export async function approveIntent(intent) {
     throw Error("The signing request changed during authentication.");
   // IndexedDB's unique-key transaction enforces one-use even for authenticators
   // whose signature counter remains zero, and across concurrent browser tabs.
-  await transaction("approvals", "readwrite", (s) =>
-    s.add({ nonce: intent.nonce, challenge, expiresAt: intent.expiresAt }),
-  );
-  profile.credential.counter = verified.counter;
-  await saveDevice(profile);
-  return {
+  const record = {
     format: "inklark-approval",
     version: 1,
     intent: JSON.parse(pinned),
     assertion,
   };
+  await commitApproval(profile, record, verified);
+  return record;
 }
 export async function verifyApprovalRecord(
   record,
@@ -263,6 +368,24 @@ export async function verifyApprovalRecord(
   return verifyApproval(record.assertion, pinnedCredential, {
     challenge: await approvalChallenge(pinnedIntent),
     expiresAt: pinnedIntent.expiresAt,
+    origin,
+    rpId: new URL(origin).hostname,
+  });
+}
+export async function verifySavedApprovalRecord(
+  record,
+  pinnedCredential,
+  pinnedIntent,
+  origin,
+) {
+  if (
+    record.format !== "inklark-approval" ||
+    record.version !== 1 ||
+    canonical(record.intent) !== canonical(pinnedIntent)
+  )
+    throw Error("The approval does not match the pinned request.");
+  return verifyApprovalEvidence(record.assertion, pinnedCredential, {
+    challenge: await approvalChallenge(pinnedIntent),
     origin,
     rpId: new URL(origin).hostname,
   });

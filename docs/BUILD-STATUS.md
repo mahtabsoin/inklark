@@ -22,6 +22,10 @@ Setup uses two WebAuthn ceremonies once: credential creation, followed by proof 
 
 `npm run test:device` uses a fresh Playwright context and a virtual CTAP2 authenticator. It checks persistent key storage, encrypted decryption, real signed assertions, replay refusal, canceled authentication and retry, changes during authentication, a mobile viewport, optional preview, and a downloaded PDF whose hash matches its approval record. It does not operate a real person's credential.
 
+Enrollment evidence now binds the full stable public device description, including its encryption key, credential ID, signer name, and appearance revision. Tests reject substitutions of those fields. Approval proof, one-use nonce, and the monotonic authenticator counter are committed in one IndexedDB transaction. Injected storage failure leaves the nonce unused; concurrent approvals preserve the newest counter.
+
+Live authorization and historical evidence verification use separate functions. Historical verification checks the pinned signature binding and explicitly reports that it grants no fresh authorization. It cannot establish a trusted signing time. Encryption has a 45 MiB plaintext-envelope limit so a supported 30 MiB PDF still fits after base64 encoding and request overhead; the large-envelope regression test encrypts and opens that payload. The relay still needs matching limits and storage behavior.
+
 ## Next implementation step
 
 Build the durable relay and remote MCP endpoint around the shared request encryption and approval checks. Verify credential enrollment on the relay, bind its pairing to the device delivery key, and store only encrypted document payloads. Then connect the signing preview to request delivery and prove a live cloud-agent call before labeling the release ready for user testing.
