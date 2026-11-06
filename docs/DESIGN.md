@@ -2,6 +2,8 @@
 
 Inklark reduces the manual work of completing a PDF while keeping the final signing decision with a person. It is a small local application with an agent preparation interface. The initial release has no subscription, paid signing dependency, or document-processing service.
 
+The [next-release journey](JOURNEY.md) makes the personal agent responsible for preparation and proposes one authenticated signing action on the human's device. It makes typed-name signatures the default and handwriting optional. The decisions below describe the current implementation; the journey document separates proposed work from released behavior.
+
 ## Separate preparation from signing
 
 An agent can inspect a document, map fields, fill reliable answers, and mark signature locations. It can use the information and sources the user has authorized in its own environment. Inklark does not build another personal-memory system or model integration.
