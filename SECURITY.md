@@ -1,0 +1,42 @@
+# Security model
+
+Inklark processes PDFs in the browser and exposes a restricted local preparation interface to agents. This project has not received an independent security audit. Use the documented controls and limitations to decide which documents to process.
+
+## What is protected
+
+- **Stored signatures:** signature names and PNG assets are encrypted together using AES-256-GCM. The key is derived from the vault password with PBKDF2-HMAC-SHA-256, 600,000 iterations, and a random 16-byte salt. Each save uses a fresh random 12-byte nonce. Only the encrypted envelope is written to localStorage. The derived key is non-extractable through the Web Crypto API. The password is not stored. An unlocked client can still access decrypted signatures.
+- **Human approval:** agent requests carry signature placeholders. The agent API has no vault-read or sign operation. The browser renders the actual final bytes for review and requires a fresh approval checkbox before downloading a signature-bearing export. It rechecks the original's hash and edit snapshot at approval. This is application-level consent, not hardware-backed proof of human presence.
+- **Local handoff:** the server binds to `127.0.0.1`, validates Host and Origin headers, rejects cross-origin requests, and uses random request secrets. The browser receives its one-use opening secret in a URL fragment. Tool results omit that secret. The browser removes the fragment after reading it. Requests expire after 30 minutes by default. The completion endpoint accepts a bounded receipt and no PDF bytes.
+- **Cross-process preparation:** another local Inklark process can submit an unsigned request to the stable launcher using an endpoint that requires JSON and a custom header and rejects Origin-bearing requests. It can read redacted status using the random session ID. It cannot read a signature or apply one through these endpoints. Other programs running locally remain within the trusted-device threat model.
+- **File access:** agent paths are restricted to the real path of `FILLSIGN_WORKSPACE`, including symlink resolution. Packet and CLI preview writes refuse to overwrite existing files. PDFs, request sizes, item counts, and vault imports have bounds. Request-file contents remain sensitive plaintext.
+- **Untrusted content:** PDF JavaScript is not exposed as an executable viewer feature. PDF.js evaluation and XFA are disabled. Form fields and source labels are displayed as text, with escaped HTML. Local assets are bundled and a CSP restricts connections to the same origin. Supported PDFs with detected digital signatures or certification restrictions are rejected before editing.
+
+## Boundaries
+
+The optional protected-PDF helper runs pikepdf in a local subprocess. A bounded JSON request, including any PDF password, travels over stdin; output returns over stdout. The helper uses in-memory files and has a 45-second timeout. It has no document network calls and writes no temporary PDFs. The route requires the local app's exact Origin and an explicit operation header. It is excluded from MCP tools. The helper checks for existing PDF signatures and certification restrictions before saving an unencrypted copy. This protects the stored original; final downloads deliberately do not preserve the input PDF's password.
+
+The local `/setup` endpoint supplies installation paths to build a copyable agent setup request. It contains no credentials or vault data. Cross-origin response reading is restricted by the same server controls. An agent receiving the copied request must still ask which document folder it may access.
+
+A visual signature is copyable. Any person or agent who receives the signed PDF, an image of it, or screen access may copy the appearance. This release does not create certificate-backed signatures or prevent copying from exported documents.
+
+An agent's report that it verified a fact is not independent verification. `source` values are untrusted labels. `sensitive`, `needsReview`, or a nonempty `question` triggers human acknowledgement, but the app cannot automatically identify every sensitive field that an agent failed to flag. Review the full document before signing consequential declarations.
+
+Software with unrestricted control of the same browser or operating-system session can bypass application-level boundaries. A simple approval checkbox cannot establish human presence against browser automation or malware. Stronger isolation would require an independent privilege boundary, separate device, or authenticator-backed approval designed around the exact transaction.
+
+The local server's health check identifies another running Inklark instance for convenience. It does not cryptographically authenticate that process. A malicious local process that controls the port is within the compromised-device threat model. Keep the OS and browser secure, restrict your agent's capabilities, and avoid unlocking the vault in an agent-controlled browser profile.
+
+The hosting service supplies app code. A compromised host or malicious app update could intercept an unlocked vault. HTTPS and encryption at rest do not solve malicious client code. Self-host a reviewed build when this risk matters. Browser extensions and privileged developer tools are also part of the client trust boundary.
+
+The completion receipt is an unauthenticated application report. It says the browser invoked a download and supplies an output hash. It is not proof of identity, legal intent, successful delivery, or cryptographic PDF signature validity.
+
+## Storage and availability
+
+The vault is local to an origin. Keep the local server port stable. A hosted copy, the development server, and another browser each have separate vault storage. Signature backups are encrypted and portable; manual transfers are the current cross-device mechanism.
+
+PDFs and draft answers stay in memory unless the human saves a request or output. Application assets may be cached for offline loading; private documents are excluded from the cache list. Browser storage can be cleared or evicted. Keep vault backups and the password in safe places. Recovery is impossible if both the unlock secret and all usable copies are lost.
+
+There is no automatic update check, telemetry, remote model call, or external runtime asset fetch in the browser app. Your agent client has its own network behavior and provider privacy terms. A user's chosen hosting service may log ordinary app requests and IP addresses.
+
+## Reporting
+
+Report vulnerabilities privately to the repository maintainer through GitHub private vulnerability reporting when enabled. Do not include real documents, signature assets, vault passwords, or personal identifiers in public issues. Use synthetic fixtures for reproduction.

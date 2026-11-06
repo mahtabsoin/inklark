@@ -1,0 +1,22 @@
+name: Bug report
+description: Report a problem with a synthetic or public sample.
+body:
+  - type: markdown
+    attributes:
+      value: Please keep personal PDFs, signature assets, vault files, passwords, and identifying information out of public issues. Use a synthetic sample. Report security issues privately as described in SECURITY.md.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Include what you expected and the steps needed to reproduce the problem.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Browser and operating system
+  - type: textarea
+    id: sample
+    attributes:
+      label: Synthetic sample or error message
+      description: Check for personal information before sharing. An error message may contain document text or local paths.
