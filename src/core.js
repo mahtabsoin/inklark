@@ -412,8 +412,37 @@ export async function exportPdf(
     }
   }
   try {
-    doc.getForm().updateFieldAppearances(font);
-    if (flatten && doc.getForm().getFields().length) doc.getForm().flatten();
+    const form = doc.getForm();
+    form.updateFieldAppearances(font);
+    if (flatten && form.getFields().length) {
+      // pdf-lib can leave page references to deleted radio-group widgets.
+      // Capture each field's annotations before flattening deletes its objects.
+      const widgets = new Set(
+        form
+          .getFields()
+          .flatMap((field) =>
+            field.acroField.getWidgets().map((widget) => widget.dict),
+          ),
+      );
+      const removals = doc
+        .getPages()
+        .map(
+          (page) =>
+            new Set(
+              (page.node.Annots()?.asArray() || []).filter((ref) =>
+                widgets.has(doc.context.lookup(ref)),
+              ),
+            ),
+        );
+      form.flatten({ updateFieldAppearances: false });
+      for (const [index, page] of doc.getPages().entries()) {
+        const annotations = page.node.Annots();
+        if (!annotations) continue;
+        for (let n = annotations.size() - 1; n >= 0; n--)
+          if (removals[index].has(annotations.get(n))) annotations.remove(n);
+        if (!annotations.size()) page.node.delete(PDFName.of("Annots"));
+      }
+    }
   } catch {
     throw Error(
       "A form value could not be saved. Check its characters and available options.",

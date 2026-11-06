@@ -10,8 +10,12 @@ import {
   getStatus,
 } from "../agent/engine.mjs";
 import { demoPdf } from "../src/demo.js";
-import { makePacket } from "../src/core.js";
-import { encryptedFixture, pdfHelperAvailable } from "./pdf-fixtures.mjs";
+import { makePacket, exportPdf } from "../src/core.js";
+import {
+  encryptedFixture,
+  pdfHelperAvailable,
+  paintedAnswerFixture,
+} from "./pdf-fixtures.mjs";
 await mkdir("test-results", { recursive: true });
 const browser = await chromium.launch({
   headless: true,
@@ -36,6 +40,79 @@ page.on("request", (r) => {
     external.push(r.url());
 });
 try {
+  const existingPage = await context.newPage();
+  existingPage.on("pageerror", (e) => errors.push(e.message));
+  await existingPage.goto(server.origin);
+  const paintedBytes = await paintedAnswerFixture();
+  await existingPage.locator("#file-input").setInputFiles({
+    name: "existing-answers.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from(paintedBytes),
+  });
+  const painted = existingPage.getByRole("textbox", {
+    name: "painted_answer",
+    exact: true,
+    includeHidden: true,
+  });
+  await painted.waitFor();
+  assert.equal(await painted.inputValue(), "");
+  assert.equal(
+    await existingPage
+      .getByRole("textbox", { name: "saved_answer", exact: true })
+      .inputValue(),
+    "Saved sample answer",
+  );
+  const box = await painted.boundingBox();
+  const clip = {
+    x: box.x + 6,
+    y: box.y + 6,
+    width: box.width - 12,
+    height: box.height - 12,
+  };
+  const screenshot = () => existingPage.screenshot({ clip, caret: "hide" });
+  const visible = await screenshot();
+  await painted.evaluate((el) => {
+    el.style.visibility = "hidden";
+  });
+  const underlying = await screenshot();
+  assert.ok(
+    visible.equals(underlying),
+    "An untouched empty control must preserve the page's painted answer",
+  );
+  await painted.evaluate((el) => {
+    el.style.visibility = "";
+  });
+  await painted.focus();
+  assert.ok(
+    (await screenshot()).equals(underlying),
+    "Focusing an empty control must preserve the painted answer",
+  );
+  await painted.fill("Updated sample answer");
+  assert.equal(await painted.inputValue(), "Updated sample answer");
+  assert.equal(
+    await painted.evaluate((el) => getComputedStyle(el).backgroundColor),
+    "rgb(255, 255, 255)",
+  );
+  await painted.press("Tab");
+  await existingPage.locator("#undo").click();
+  assert.equal(await painted.inputValue(), "");
+  assert.ok(
+    (await screenshot()).equals(underlying),
+    "Undo must restore visibility of the original painted answer",
+  );
+  await existingPage.locator("#file-input").setInputFiles({
+    name: "exported-existing-answers.pdf",
+    mimeType: "application/pdf",
+    buffer: Buffer.from(await exportPdf(paintedBytes, [])),
+  });
+  await existingPage.waitForFunction(
+    () => !document.querySelector("#native-fields input"),
+  );
+  assert.ok(
+    (await screenshot()).equals(underlying),
+    "Export must preserve the original painted answer",
+  );
+  await existingPage.close();
   await page.goto(server.origin);
   await page.screenshot({ path: "test-results/desktop-empty.png" });
   await page.getByRole("button", { name: /Try a sample form/ }).click();
@@ -211,13 +288,11 @@ try {
     protectedPage.on("pageerror", (e) => errors.push(e.message));
     await protectedPage.goto(server.origin);
     const encrypted = encryptedFixture(await demoPdf());
-    await protectedPage
-      .locator("#file-input")
-      .setInputFiles({
-        name: "protected-no-password.pdf",
-        mimeType: "application/pdf",
-        buffer: Buffer.from(encrypted),
-      });
+    await protectedPage.locator("#file-input").setInputFiles({
+      name: "protected-no-password.pdf",
+      mimeType: "application/pdf",
+      buffer: Buffer.from(encrypted),
+    });
     await protectedPage.locator("#native-fields input").first().waitFor();
     assert.equal(
       await protectedPage.locator("#native-fields input").count(),
@@ -227,13 +302,11 @@ try {
       await demoPdf(),
       "synthetic-pdf-password",
     );
-    await protectedPage
-      .locator("#file-input")
-      .setInputFiles({
-        name: "protected-with-password.pdf",
-        mimeType: "application/pdf",
-        buffer: Buffer.from(passwordPdf),
-      });
+    await protectedPage.locator("#file-input").setInputFiles({
+      name: "protected-with-password.pdf",
+      mimeType: "application/pdf",
+      buffer: Buffer.from(passwordPdf),
+    });
     await protectedPage.locator("#pdf-password").fill("synthetic-pdf-password");
     await protectedPage.locator("#pdf-password-form button").click();
     await protectedPage

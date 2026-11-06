@@ -441,6 +441,11 @@ function renderNativeFields() {
           : "input",
     );
     el.className = "native-field";
+    // Some PDFs paint answers into page content but leave their form values
+    // empty. Keep untouched empty controls transparent so they cannot hide it.
+    if (!item && (value === "" || value == null))
+      el.classList.add("empty-original");
+    el.oninput = () => el.classList.remove("empty-original");
     el.setAttribute("aria-label", f.name);
     el.title = f.name;
     position(el, f);

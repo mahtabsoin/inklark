@@ -1580,6 +1580,10 @@ body.busy {
 #native-fields .native-field:focus {
   background: white;
 }
+#native-fields .native-field.empty-original,
+#native-fields .native-field.empty-original:focus {
+  background: transparent;
+}
 .workspace.has-document .native-field {
   font-family: Arial, sans-serif;
 }

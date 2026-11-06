@@ -80,6 +80,30 @@ test("existing digital signatures and certification restrictions are rejected", 
   restricted.catalog.set(PDFName.of("Perms"), restricted.context.obj({}));
   await assert.rejects(() => loadPdfFrom(restricted), /certification/);
 });
+test("flattening grouped controls removes widget references and preserves other annotations", async () => {
+  const doc = await PDFDocument.create();
+  const page = doc.addPage();
+  const group = doc.getForm().createRadioGroup("sample_choice");
+  group.addOptionToPage("A", page, { x: 50, y: 500, width: 20, height: 20 });
+  group.addOptionToPage("B", page, { x: 90, y: 500, width: 20, height: 20 });
+  group.select("A");
+  page.node.addAnnot(
+    doc.context.register(
+      doc.context.obj({
+        Type: "Annot",
+        Subtype: "Text",
+        Rect: [200, 500, 220, 520],
+      }),
+    ),
+  );
+  const result = await loadPdf(await exportPdf(await doc.save(), []));
+  const annotations = result.getPage(0).node.Annots()?.asArray() || [];
+  assert.equal(annotations.length, 1, "Only the unrelated note should remain");
+  assert.equal(
+    result.context.lookup(annotations[0]).get(PDFName.of("Subtype")).toString(),
+    "/Text",
+  );
+});
 async function loadPdfFrom(doc) {
   return loadPdf(await doc.save());
 }

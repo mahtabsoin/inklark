@@ -1,5 +1,29 @@
 import { spawnSync } from "node:child_process";
 import { bytesToBase64, base64ToBytes } from "../src/core.js";
+import { PDFDocument, StandardFonts } from "pdf-lib";
+
+// A PDF can contain painted answers underneath empty interactive fields.
+// Keep this synthetic: real financial forms must never become test fixtures.
+export async function paintedAnswerFixture() {
+  const doc = await PDFDocument.create();
+  const page = doc.addPage([612, 792]);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  page.drawText("Existing sample answer", { x: 64, y: 610, size: 14, font });
+  const form = doc.getForm();
+  const empty = form.createTextField("painted_answer");
+  empty.addToPage(page, {
+    x: 56,
+    y: 600,
+    width: 300,
+    height: 32,
+    backgroundColor: undefined,
+    borderWidth: 0,
+  });
+  const filled = form.createTextField("saved_answer");
+  filled.addToPage(page, { x: 56, y: 500, width: 300, height: 32 });
+  filled.setText("Saved sample answer");
+  return doc.save();
+}
 const python =
   process.env.FILLSIGN_PYTHON ||
   (process.platform === "win32" ? "python" : "python3");
