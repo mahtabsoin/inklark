@@ -1,0 +1,31 @@
+{
+  "name": "fillsign",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local PDF filling and human-approved signing for people and agents.",
+  "scripts": {
+    "dev": "npm run build && node agent/cli.mjs serve",
+    "build": "node scripts/build.mjs && node scripts/offline.mjs",
+    "start": "node agent/cli.mjs serve",
+    "agent": "node agent/cli.mjs",
+    "mcp": "node agent/mcp.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "test:browser": "node tests/browser.mjs",
+    "check:public": "node scripts/check-public.mjs"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "pdf-lib": "1.17.1",
+    "pdfjs-dist": "5.4.624"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "playwright": "1.59.1"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

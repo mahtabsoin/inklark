@@ -1,0 +1,2 @@
+# Optional local-only support for encrypted PDFs. The browser editor works without it.
+pikepdf==10.10.0

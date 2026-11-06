@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 96 96" role="img" aria-label="Inklark ink-ribbon bird">
+  <defs>
+    <linearGradient id="wing" x1="12" y1="16" x2="72" y2="72" gradientUnits="userSpaceOnUse"><stop stop-color="#ffad72"/><stop offset=".42" stop-color="#ef739e"/><stop offset="1" stop-color="#7256db"/></linearGradient>
+    <linearGradient id="sweep" x1="19" y1="77" x2="77" y2="28" gradientUnits="userSpaceOnUse"><stop stop-color="#35c8be"/><stop offset=".5" stop-color="#528fe4"/><stop offset="1" stop-color="#7356db"/></linearGradient>
+    <linearGradient id="tail" x1="10" y1="78" x2="56" y2="70" gradientUnits="userSpaceOnUse"><stop stop-color="#83ddcd"/><stop offset="1" stop-color="#5f8ce6"/></linearGradient>
+  </defs>
+  <path d="M24 67C8 51 10 28 27 17c12-8 24-3 24 10 0 15-18 25-17 37 1 7 8 8 14 3C57 59 57 44 65 36c5-5 11-7 17-7-6 6-9 13-13 21-9 20-25 34-42 28-7-2-13-6-17-11 5 3 10 3 14 0Z" fill="url(#sweep)"/>
+  <path d="M24 67C8 51 10 28 27 17c12-8 24-3 24 10 0 15-18 25-17 37 0 3 1 6 4 7-14-2-15-12-10-23 5-10 14-19 9-23-4-4-13 4-14 14-2 10 2 18 7 23l-6 5Z" fill="url(#wing)"/>
+  <path d="M10 78c15 3 26-3 37-11-6 12-21 22-37 11Z" fill="url(#tail)"/>
+  <circle cx="76" cy="24" r="8" fill="#ffb66e"/>
+  <path d="m83 22 9 4-10 3Z" fill="#e77c82"/>
+  <circle cx="78" cy="22" r="1.4" fill="#49395e"/>
+</svg>
