@@ -22,3 +22,6 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
       - run: npm run test:device
+      - run: npm run test:relay
+      - run: node scripts/build-relay.mjs
+      - run: npm run test:worker

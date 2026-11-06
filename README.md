@@ -10,7 +10,7 @@ The screenshot uses a sample form and synthetic test data.
 
 Read [the design decisions](docs/DESIGN.md) for the reasoning behind local storage, human approval, and the agent boundary.
 
-An experimental [device-authenticated signing preview](docs/BUILD-STATUS.md) is in development for the agent-driven journey. Its local and virtual-authenticator tests pass; hosted cloud delivery and physical-phone verification are still pending. The original editor remains available during development.
+An experimental [device-authenticated signing preview](docs/BUILD-STATUS.md) supports encrypted remote MCP delivery in local automation. A prepared request opens automatically and one authenticated action produces the PDF locally. [Cloud setup and compatibility](docs/REMOTE-SETUP.md), hosted enrollment, unattended cleanup, and physical-phone verification remain release gates. No cloud-agent connection is verified yet. The original editor remains available during development.
 
 ## Run locally
 

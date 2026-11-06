@@ -257,6 +257,15 @@ body {
   max-width: 100%;
   margin: 12px auto;
 }
+.sign-page-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  margin-top: 12px;
+}
+.sign-page-controls button { padding: 8px 10px; font-size: 12px; }
 @media (max-width: 600px) {
   .sign-shell header {
     padding: 20px;

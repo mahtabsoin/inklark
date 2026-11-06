@@ -247,6 +247,47 @@ export function enrollmentIntent(profile) {
 export function deviceRegistration(profile) {
   return { device: enrollmentDevice(profile), proof: profile.enrollment };
 }
+export async function renewDeviceRegistration() {
+  const profile = await getDevice();
+  if (!profile) throw Error("Set up device signing first.");
+  const intent = enrollmentIntent(profile);
+  const { verified, assertion } = await authenticate(
+    profile,
+    await fingerprint(intent),
+    intent.expiresAt,
+  );
+  const db = await database();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("device", "readwrite"),
+        store = tx.objectStore("device"),
+        read = store.get(KEY);
+      read.onsuccess = () => {
+        const current = read.result;
+        if (
+          !current ||
+          canonical(enrollmentDevice(current)) !==
+            canonical(enrollmentDevice(profile))
+        ) {
+          tx.abort();
+          return;
+        }
+        profile.credential.counter = Math.max(
+          current.credential.counter,
+          verified.counter,
+        );
+        profile.enrollment = { intent, assertion };
+        store.put(profile, KEY);
+      };
+      tx.oncomplete = resolve;
+      tx.onabort = tx.onerror = () =>
+        reject(Error("Device pairing could not be saved."));
+    });
+  } finally {
+    db.close();
+  }
+  return profile;
+}
 export async function verifyDeviceRegistration(registration, origin) {
   const { device, proof } = registration;
   if (
@@ -295,11 +336,12 @@ function validHash(value) {
   return typeof value === "string" && /^[A-Za-z0-9_-]{43}$/.test(value);
 }
 export async function makeApprovalIntent(
-  { requestId, documentHash, outputHash, editsHash, expiresAt },
+  { requestId, documentHash, outputHash, editsHash, expiresAt, deliveryHash },
   profile,
 ) {
   if (
     ![requestId, documentHash, outputHash, editsHash].every(validHash) ||
+    (deliveryHash !== undefined && !validHash(deliveryHash)) ||
     !Number.isSafeInteger(expiresAt) ||
     expiresAt <= Date.now() ||
     expiresAt > Date.now() + 30 * 60000
@@ -317,6 +359,7 @@ export async function makeApprovalIntent(
     appearanceRevision: profile.appearanceRevision,
     nonce: randomId(),
     expiresAt,
+    ...(deliveryHash !== undefined ? { deliveryHash } : {}),
   });
 }
 export async function approveIntent(intent) {
