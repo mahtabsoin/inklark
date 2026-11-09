@@ -15,12 +15,19 @@ import {
 
 const DB = "inklark-device-v1";
 const KEY = "active-device";
+const OUTPUT_LIMIT = 45 * 1024 * 1024;
+const OUTPUT_TTL = 30 * 60000;
 function database() {
   return new Promise((resolve, reject) => {
-    const open = indexedDB.open(DB, 1);
+    const open = indexedDB.open(DB, 2);
     open.onupgradeneeded = () => {
-      open.result.createObjectStore("device");
-      open.result.createObjectStore("approvals", { keyPath: "nonce" });
+      if (!open.result.objectStoreNames.contains("device"))
+        open.result.createObjectStore("device");
+      const approvals = open.result.objectStoreNames.contains("approvals")
+        ? open.transaction.objectStore("approvals")
+        : open.result.createObjectStore("approvals", { keyPath: "nonce" });
+      if (!approvals.indexNames.contains("requestId"))
+        approvals.createIndex("requestId", "record.intent.requestId");
     };
     open.onsuccess = () => resolve(open.result);
     open.onerror = () =>
@@ -51,7 +58,12 @@ export const getDevice = () =>
   transaction("device", "readonly", (s) => s.get(KEY));
 export const getApprovalRecord = (nonce) =>
   transaction("approvals", "readonly", (s) => s.get(nonce));
-async function commitApproval(profile, record, verified) {
+export async function hasRequestApproval(requestId) {
+  return !!(await transaction("approvals", "readonly", (s) =>
+    s.index("requestId").getKey(requestId),
+  ));
+}
+async function commitApproval(profile, record, verified, output) {
   const db = await database();
   try {
     await new Promise((resolve, reject) => {
@@ -69,21 +81,29 @@ async function commitApproval(profile, record, verified) {
           tx.abort();
           return;
         }
-        approvals.add({
-          nonce: record.intent.nonce,
-          expiresAt: record.intent.expiresAt,
-          record,
-        });
-        devices.put(
-          {
-            ...stored,
-            credential: {
-              ...stored.credential,
-              counter: Math.max(stored.credential.counter, verified.counter),
+        const prior = approvals.index("requestId").get(record.intent.requestId);
+        prior.onsuccess = () => {
+          if (prior.result) {
+            tx.abort();
+            return;
+          }
+          approvals.add({
+            nonce: record.intent.nonce,
+            expiresAt: record.intent.expiresAt,
+            record,
+            ...(output ? { output } : {}),
+          });
+          devices.put(
+            {
+              ...stored,
+              credential: {
+                ...stored.credential,
+                counter: Math.max(stored.credential.counter, verified.counter),
+              },
             },
-          },
-          KEY,
-        );
+            KEY,
+          );
+        };
       };
       tx.oncomplete = () => resolve();
       tx.onerror = tx.onabort = () =>
@@ -92,6 +112,168 @@ async function commitApproval(profile, record, verified) {
             "The approval could not be saved or was already completed. Nothing new was signed.",
           ),
         );
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function outputKey(profile) {
+  const candidate = profile.outputKey || {
+    id: randomId(),
+    key: await crypto.subtle.generateKey(
+      { name: "AES-GCM", length: 256 },
+      false,
+      ["encrypt", "decrypt"],
+    ),
+  };
+  const db = await database();
+  try {
+    return await new Promise((resolve, reject) => {
+      let selected;
+      const tx = db.transaction("device", "readwrite"),
+        store = tx.objectStore("device"),
+        read = store.get(KEY);
+      read.onsuccess = () => {
+        const current = read.result;
+        if (
+          !current ||
+          canonical(enrollmentDevice(current)) !== canonical(enrollmentDevice(profile))
+        ) {
+          tx.abort();
+          return;
+        }
+        selected = current.outputKey || candidate;
+        if (!current.outputKey) store.put({ ...current, outputKey: selected }, KEY);
+      };
+      tx.oncomplete = () => resolve(selected);
+      tx.onabort = tx.onerror = () => reject(
+        Error("Local recovery storage is unavailable. Nothing was signed."),
+      );
+    });
+  } finally {
+    db.close();
+  }
+}
+function outputAAD(intent, output) {
+  return utf8(canonical({
+    purpose: "inklark-local-output-v1",
+    intent,
+    keyId: output.keyId,
+    expiresAt: output.expiresAt,
+  }));
+}
+async function encryptOutput(profile, intent, artifact) {
+  const bytes = new Uint8Array(artifact.bytes);
+  if (
+    !bytes.length || bytes.length > OUTPUT_LIMIT ||
+    await digest(bytes) !== intent.outputHash
+  )
+    throw Error("The recovery PDF does not match the approved output.");
+  const { name, pages, signatureCount } = artifact;
+  if (
+    typeof name !== "string" || name.length > 512 ||
+    !Number.isInteger(pages) || pages < 1 || pages > 100 ||
+    !Number.isInteger(signatureCount) || signatureCount < 1 || signatureCount > 1000
+  )
+    throw Error("Invalid recovery document details.");
+  const header = utf8(JSON.stringify({ name, pages, signatureCount }));
+  const payload = new Uint8Array(4 + header.length + bytes.length);
+  new DataView(payload.buffer).setUint32(0, header.length);
+  payload.set(header, 4);
+  payload.set(bytes, 4 + header.length);
+  const key = await outputKey(profile);
+  const output = {
+    version: 1,
+    keyId: key.id,
+    expiresAt: Date.now() + OUTPUT_TTL,
+    iv: crypto.getRandomValues(new Uint8Array(12)),
+    notificationPending: !!intent.deliveryHash,
+  };
+  output.ciphertext = new Uint8Array(await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: output.iv, additionalData: outputAAD(intent, output) },
+    key.key,
+    payload,
+  ));
+  return output;
+}
+
+export async function getRecoveryRequest(preferredId) {
+  const db = await database();
+  try {
+    return await new Promise((resolve, reject) => {
+      let selected = null;
+      const tx = db.transaction("approvals", "readwrite"),
+        store = tx.objectStore("approvals"),
+        cursor = store.openCursor();
+      cursor.onsuccess = () => {
+        const c = cursor.result;
+        if (!c) return;
+        const row = c.value;
+        if (row.output?.expiresAt <= Date.now()) {
+          delete row.output;
+          c.update(row);
+        } else if (
+          row.output && !selected &&
+          (preferredId ? row.record.intent.requestId === preferredId : row.output.notificationPending)
+        )
+          selected = row.record.intent.requestId;
+        c.continue();
+      };
+      tx.oncomplete = () => resolve(selected);
+      tx.onabort = tx.onerror = () => reject(Error("Local recovery could not be read."));
+    });
+  } finally {
+    db.close();
+  }
+}
+export async function recoverApprovedOutput(requestId) {
+  if (!validHash(requestId)) throw Error("Invalid recovery request.");
+  const row = await transaction("approvals", "readonly", (s) =>
+    s.index("requestId").get(requestId),
+  );
+  const output = row?.output,
+    profile = await getDevice();
+  if (!output || output.expiresAt <= Date.now()) return null;
+  if (
+    output.version !== 1 || output.keyId !== profile?.outputKey?.id ||
+    !(output.iv instanceof Uint8Array) || output.iv.length !== 12 ||
+    !(output.ciphertext instanceof Uint8Array) ||
+    output.ciphertext.length > OUTPUT_LIMIT + 4116
+  )
+    throw Error("The saved PDF cannot be recovered on this device.");
+  await verifySavedApprovalRecord(row.record, profile.credential, row.record.intent, location.origin);
+  const payload = new Uint8Array(await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: output.iv, additionalData: outputAAD(row.record.intent, output) },
+    profile.outputKey.key,
+    output.ciphertext,
+  ));
+  const headerLength = new DataView(payload.buffer).getUint32(0);
+  if (headerLength > 4096 || headerLength >= payload.length - 4) throw Error("Invalid recovery PDF.");
+  const details = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(
+    payload.subarray(4, 4 + headerLength),
+  ));
+  const bytes = payload.slice(4 + headerLength);
+  if (await digest(bytes) !== row.record.intent.outputHash)
+    throw Error("The recovered PDF differs from the approved output.");
+  return { ...details, bytes, record: row.record, notificationPending: output.notificationPending };
+}
+export async function updateCachedOutput(nonce, { notified = false, remove = false } = {}) {
+  const db = await database();
+  try {
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction("approvals", "readwrite"),
+        store = tx.objectStore("approvals"),
+        read = store.get(nonce);
+      read.onsuccess = () => {
+        const row = read.result;
+        if (!row?.output) return;
+        if (remove) delete row.output;
+        else if (notified) row.output.notificationPending = false;
+        store.put(row);
+      };
+      tx.oncomplete = resolve;
+      tx.onabort = tx.onerror = () => reject(Error("Local recovery status could not be saved."));
     });
   } finally {
     db.close();
@@ -272,11 +454,10 @@ export async function renewDeviceRegistration() {
           tx.abort();
           return;
         }
-        profile.credential.counter = Math.max(
-          current.credential.counter,
-          verified.counter,
-        );
-        profile.enrollment = { intent, assertion };
+        Object.assign(profile, current, {
+          credential: { ...current.credential, counter: Math.max(current.credential.counter, verified.counter) },
+          enrollment: { intent, assertion },
+        });
         store.put(profile, KEY);
       };
       tx.oncomplete = resolve;
@@ -362,7 +543,7 @@ export async function makeApprovalIntent(
     ...(deliveryHash !== undefined ? { deliveryHash } : {}),
   });
 }
-export async function approveIntent(intent) {
+export async function approveIntent(intent, artifact) {
   const profile = await getDevice();
   if (
     !profile ||
@@ -376,7 +557,11 @@ export async function approveIntent(intent) {
     throw Error("Invalid approval request.");
   if (await transaction("approvals", "readonly", (s) => s.get(intent.nonce)))
     throw Error("This signing request was already approved.");
+  if (await hasRequestApproval(intent.requestId))
+    throw Error("This signing request was already approved.");
   const pinned = canonical(intent);
+  const output = artifact ? await encryptOutput(profile, intent, artifact) : undefined;
+  if (canonical(intent) !== pinned) throw Error("The signing request changed before authentication.");
   const challenge = await approvalChallenge(intent);
   const { assertion, verified } = await authenticate(
     profile,
@@ -393,7 +578,7 @@ export async function approveIntent(intent) {
     intent: JSON.parse(pinned),
     assertion,
   };
-  await commitApproval(profile, record, verified);
+  await commitApproval(profile, record, verified, output);
   return record;
 }
 export async function verifyApprovalRecord(

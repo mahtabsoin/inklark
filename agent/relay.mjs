@@ -286,10 +286,17 @@ export function createRelay({ store, origin, now = () => Date.now(), enrollmentA
       );
     const verified = await verifyApprovalRecord(
       record,
-      device.credential,
+      // Delivery retries can arrive out of authentication order. The transaction
+      // below claims each positive counter once and preserves the observed max.
+      { ...device.credential, counter: 0 },
       intent,
       expectedOrigin,
     );
+    if (
+      (verified.counter === 0 && device.credential.counter > 0) ||
+      (verified.counter > 0 && verified.counter <= device.enrollmentCounter)
+    )
+      throw Error("The authenticator counter is inconsistent with enrollment.");
     if (
       !(await store.complete(
         owner,

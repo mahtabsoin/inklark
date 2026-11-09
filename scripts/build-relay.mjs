@@ -1,7 +1,6 @@
 import { build } from "esbuild";
 import { mkdir, readdir, rename, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
-import { SCHEMA } from "../agent/relay-store.mjs";
 
 // Run after build.mjs: the editor and approval UI share the same static assets.
 const contents = await readdir("dist");
@@ -61,50 +60,17 @@ await writeFile(
     2,
   ),
 );
-// These schema-only migrations are for a new deployment. Applied migrations
-// remain immutable. Sites provisions real database and bucket identifiers.
-await mkdir("drizzle/meta", { recursive: true });
-const migration = "drizzle/0000_relay.sql";
-const sql = SCHEMA.map(
-  (statement) =>
-    statement.replace("IF NOT EXISTS ", "") + ";\n--> statement-breakpoint",
-).join("\n");
-let existing = null;
-try {
-  existing = await readFile(migration, "utf8");
-} catch {}
-if (existing !== null && existing !== sql)
-  throw Error(
-    "Append a migration instead of changing an existing schema migration.",
-  );
-if (existing === null) await writeFile(migration, sql, { flag: "wx" });
-const journalPath = "drizzle/meta/_journal.json";
-let journal;
-try { journal = JSON.parse(await readFile(journalPath, "utf8")); }
-catch (error) { if (error.code !== "ENOENT") throw error; }
-if (journal && (journal.dialect !== "sqlite" || !journal.entries.some((entry) => entry.tag === "0000_relay")))
-  throw Error("Existing migration journal does not include the relay migration.");
-if (!journal) await writeFile(
-  journalPath,
-  JSON.stringify(
-    {
-      version: "7",
-      dialect: "sqlite",
-      entries: [
-        {
-          idx: 0,
-          version: "6",
-          when: 1794000000000,
-          tag: "0000_relay",
-          breakpoints: true,
-        },
-      ],
-    },
-    null,
-    2,
-  ),
-  { flag: "wx" },
-);
+// Source migrations are immutable. Building validates them without rewriting
+// the schema history or journal. Sites supplies deployment storage identifiers.
+const journal = JSON.parse(await readFile("drizzle/meta/_journal.json", "utf8"));
+if (journal.dialect !== "sqlite" || !Array.isArray(journal.entries) || !journal.entries.length)
+  throw Error("The relay migration journal is unavailable.");
+for (const [index, entry] of journal.entries.entries()) {
+  if (entry.idx !== index || !/^[0-9]{4}_[a-z0-9_]+$/.test(entry.tag))
+    throw Error("Invalid relay migration journal entry.");
+  if (!(await readFile(`drizzle/${entry.tag}.sql`, "utf8")).trim())
+    throw Error("A relay migration is empty.");
+}
 console.log(
   "Built the relay Worker and browser assets. Runtime identity, bindings, and deployment still require verification.",
 );

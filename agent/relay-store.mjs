@@ -6,6 +6,7 @@ export const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS chunks (owner TEXT NOT NULL, request_id TEXT NOT NULL, chunk_index INTEGER NOT NULL, PRIMARY KEY(owner,request_id,chunk_index))`,
   `CREATE UNIQUE INDEX IF NOT EXISTS approval_once ON requests(owner,approval_hash) WHERE approval_hash IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS cleanup_queue ON requests(payload_deleted,last_cleaned_at,expires_at)`,
+  `CREATE TABLE IF NOT EXISTS approval_counters (owner TEXT NOT NULL, device_id TEXT NOT NULL, counter INTEGER NOT NULL, approval_hash TEXT NOT NULL, PRIMARY KEY(owner,device_id,counter))`,
 ];
 
 export class RelayStore {
@@ -29,6 +30,7 @@ export class RelayStore {
             counter: row.counter,
           },
           registrationHash: row.registration_hash,
+          enrollmentCounter: JSON.parse(row.public_json).credential.counter,
         }
       : null;
   }
@@ -119,9 +121,18 @@ export class RelayStore {
   ) {
     const results = await this.db.batch([
       this.statement(
+        `INSERT OR IGNORE INTO approval_counters(owner,device_id,counter,approval_hash)
+        SELECT ?,?,?,? WHERE ?>0
+        AND EXISTS(SELECT 1 FROM requests WHERE owner=? AND request_id=? AND state='pending' AND expires_at>?)
+        AND EXISTS(SELECT 1 FROM devices WHERE owner=? AND counter=?)`,
+        owner, device.deviceId, verifiedCounter, approvalHash, verifiedCounter,
+        owner, request.request_id, now, owner, device.credential.counter,
+      ),
+      this.statement(
         `UPDATE requests SET state='completed',approval_hash=?,output_hash=?,approval_json=?,completed_at=?
         WHERE owner=? AND request_id=? AND state='pending' AND expires_at>?
-        AND EXISTS(SELECT 1 FROM devices WHERE owner=? AND counter=?)`,
+        AND EXISTS(SELECT 1 FROM devices WHERE owner=? AND counter=?)
+        AND (?=0 OR EXISTS(SELECT 1 FROM approval_counters WHERE owner=? AND device_id=? AND counter=? AND approval_hash=?))`,
         approvalHash,
         record.intent.outputHash,
         JSON.stringify(record),
@@ -131,6 +142,11 @@ export class RelayStore {
         now,
         owner,
         device.credential.counter,
+        verifiedCounter,
+        owner,
+        device.deviceId,
+        verifiedCounter,
+        approvalHash,
       ),
       this.statement(
         `UPDATE devices SET counter=MAX(counter,?) WHERE owner=? AND counter=?
@@ -143,7 +159,7 @@ export class RelayStore {
         approvalHash,
       ),
     ]);
-    return results[0].meta.changes === 1;
+    return results[1].meta.changes === 1;
   }
   async cleanupCandidates(owner, now, limit = 5) {
     const rows = await this.statement(

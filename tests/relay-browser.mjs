@@ -174,6 +174,18 @@ try {
       .status,
     "pending",
   );
+  await page.reload();
+  await page
+    .getByRole("heading", { name: "Your PDF is signed.", exact: true })
+    .waitFor({ timeout: 3000 });
+  const recoveredDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Download PDF again", exact: true }).click();
+  await (await recoveredDownload).saveAs("test-results/relay-recovered.pdf");
+  assert.deepEqual(await readFile("test-results/relay-recovered.pdf"), await readFile("test-results/relay-signed.pdf"), "Recovery must return the exact approved PDF bytes");
+  await page.getByRole("button", { name: "Back to requests", exact: true }).click();
+  await page.getByRole("heading", { name: "Ready when your agent is.", exact: true }).waitFor();
+  await page.reload();
+  await page.getByRole("heading", { name: "Your PDF is signed.", exact: true }).waitFor();
   await page
     .getByRole("button", { name: "Notify agent again", exact: true })
     .click();
@@ -211,6 +223,49 @@ try {
     path: "test-results/relay-completed-mobile.png",
     fullPage: true,
   });
+  await page.getByRole("button", { name: "Back to requests", exact: true }).click();
+  await page.getByRole("heading", { name: "Ready when your agent is.", exact: true }).waitFor();
+  const remainingOutput = await page.evaluate(async () => new Promise((resolve, reject) => {
+    const open = indexedDB.open("inklark-device-v1", 2);
+    open.onsuccess = () => {
+      const db = open.result, tx = db.transaction("approvals", "readonly"), read = tx.objectStore("approvals").getAll();
+      tx.oncomplete = () => { db.close(); resolve(read.result.some((row) => !!row.output)); };
+      tx.onabort = () => { db.close(); reject(Error("Recovery inspection failed")); };
+    };
+  }));
+  assert.equal(remainingOutput, false, "Returning after completion removes the encrypted local copy");
+  const queued = [];
+  const beforeQueue = (await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials[0].signCount;
+  for (let index = 1; index <= 2; index++) {
+    const nextDelivery = await prepareRemoteRequest(bytes, `Queued synthetic document ${index}.pdf`, items, target, { expectedFingerprint });
+    queued.push(await deliverRemoteRequest(nextDelivery, invoke));
+    await page.getByRole("heading", { name: "Your document is ready.", exact: true }).waitFor();
+    failOnce = true;
+    const output = page.waitForEvent("download");
+    await page.getByRole("button", { name: "Sign this document", exact: true }).click();
+    await output;
+    await page.getByRole("heading", { name: "Your PDF is signed.", exact: true }).waitFor();
+    await page.getByRole("button", { name: "Back to requests", exact: true }).click();
+    await page.getByRole("heading", { name: "Ready when your agent is.", exact: true }).waitFor();
+  }
+  await page.reload();
+  await page.getByRole("heading", { name: "Your PDF is signed.", exact: true }).waitFor();
+  const firstRecovered = await page.locator(".sign-document strong").textContent();
+  await page.getByRole("button", { name: "Back to requests", exact: true }).click();
+  await page.getByRole("heading", { name: "Your PDF is signed.", exact: true }).waitFor({ timeout: 3000 });
+  assert.notEqual(await page.locator(".sign-document strong").textContent(), firstRecovered, "The next already-approved request must recover its own output");
+  assert.equal(await page.getByRole("button", { name: "Sign this document", exact: true }).count(), 0);
+  await page.getByRole("button", { name: "Notify agent again", exact: true }).click();
+  await page.getByText("Your PDF is signed. Your agent received completion status only.", { exact: true }).waitFor();
+  await page.getByRole("button", { name: "Back to requests", exact: true }).click();
+  await page.getByRole("heading", { name: "Ready when your agent is.", exact: true }).waitFor();
+  await page.reload();
+  await page.getByRole("heading", { name: "Your PDF is signed.", exact: true }).waitFor();
+  await page.getByRole("button", { name: "Notify agent again", exact: true }).click();
+  await page.getByText("Your PDF is signed. Your agent received completion status only.", { exact: true }).waitFor();
+  for (const request of queued)
+    assert.equal((await invoke("get_request_status", { request_id: request.requestId })).status, "completed");
+  assert.equal((await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials[0].signCount, beforeQueue + 2, "Recovering multiple pending completions must not sign either request again");
   assert.deepEqual(errors, []);
   assert.deepEqual(external, []);
   console.log(

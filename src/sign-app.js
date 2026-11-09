@@ -8,6 +8,10 @@ import {
   approveIntent,
   deviceRegistration,
   renewDeviceRegistration,
+  getRecoveryRequest,
+  recoverApprovedOutput,
+  updateCachedOutput,
+  hasRequestApproval,
 } from "./device.js";
 import { randomId, digest, fingerprint } from "./trust.js";
 import { readPacket, makePacket, exportPdf } from "./core.js";
@@ -37,6 +41,7 @@ let error = "",
   preview = null;
 const acknowledgements = new Set();
 const failedRequests = new Set();
+const handledRequests = new Set();
 let relay = null,
   notificationPending = false,
   pollTimer = null,
@@ -136,7 +141,7 @@ function render() {
             `<label class="sign-question"><input type="checkbox" data-ack="${esc(i.id)}" ${acknowledgements.has(i.id) ? "checked" : ""} ${receipt || busy ? "disabled" : ""}><span>${esc(i.question || "Check this answer before signing.")}<strong>${esc(i.label || "Answer")}: ${esc(i.value)}</strong></span></label>`,
         )
         .join("")}
-      <div class="sign-actions"><button id="sign-now" class="sign-primary" ${busy || pending.length ? "disabled" : ""}>${busy ? "Waiting for authentication…" : receipt ? "Download PDF again" : "Sign this document"}</button><button id="inspect-document" class="sign-secondary" ${busy ? "disabled" : ""}>View document</button></div>${receipt ? '<button id="save-proof" class="sign-link">Save approval record</button>' : ""}${notificationPending ? '<button id="retry-notification" class="sign-secondary">Notify agent again</button>' : receipt ? '<button id="next-request" class="sign-link">Back to requests</button>' : '<button id="cancel-request" class="sign-link">Dismiss request</button>'}`
+      <div class="sign-actions"><button id="sign-now" class="sign-primary" ${busy || pending.length ? "disabled" : ""}>${busy ? "Waiting for authentication…" : receipt ? "Download PDF again" : "Sign this document"}</button><button id="inspect-document" class="sign-secondary" ${busy ? "disabled" : ""}>View document</button></div>${receipt ? '<button id="save-proof" class="sign-link">Save approval record</button>' : ""}${notificationPending ? '<button id="retry-notification" class="sign-secondary">Notify agent again</button>' : ""}${receipt ? '<button id="next-request" class="sign-link">Back to requests</button>' : '<button id="cancel-request" class="sign-link">Dismiss request</button>'}`
         : `<div class="sign-actions">${relay ? (relay.device?.deviceId === device.deviceId ? '<button id="connect-agent" class="sign-primary">Connect your agent</button>' : '<button id="pair-device" class="sign-primary">Connect this device</button>') : ""}<button id="sample-request" class="${relay ? "sign-secondary" : "sign-primary"}" ${busy ? "disabled" : ""}>Try a prepared sample</button><button id="open-request" class="sign-secondary" ${busy ? "disabled" : ""}>Open agent request</button></div><div id="connection-guide" hidden><h2>Connect your agent</h2><ol><li>Open your agent's connectors or plugins.</li><li>Add Inklark using its connection address and complete sign-in.</li><li>Paste the pairing instructions into your agent conversation.</li></ol><button id="copy-connection" class="sign-secondary">Copy connection address</button><button id="copy-pairing" class="sign-secondary">Copy pairing instructions</button><p class="sign-small">Pairing verifies the destination before your agent sends a document. Your agent needs a runtime that can prepare and encrypt PDF artifacts.</p></div>`
     }
     </section>`
@@ -224,7 +229,7 @@ function render() {
   document.querySelector("#next-request")?.addEventListener("click", () => run(resetRequest));
   document.querySelector("#cancel-request")?.addEventListener("click", () => run(async () => {
     if (prepared.deliveryHash) await api("/api/cancel", { requestId: prepared.requestId });
-    resetRequest();
+    await resetRequest();
     message = "Request dismissed. Nothing was signed.";
   }));
   document
@@ -320,6 +325,9 @@ async function prepare(packet, delivery = null) {
     expiresAt: delivery?.manifest.route.expiresAt || Date.now() + 30 * 60000,
     deliveryHash: delivery?.deliveryHash,
   };
+  const url = new URL(location.href);
+  url.searchParams.set("request", prepared.requestId);
+  history.replaceState(null, "", url);
   acknowledgements.clear();
   receipt = null;
   notificationPending = false;
@@ -361,13 +369,19 @@ async function sign() {
     },
     device,
   );
-  const approved = await approveIntent(intent);
+  const approved = await approveIntent(intent, {
+    bytes: prepared.bytes,
+    name: prepared.request.name,
+    pages: prepared.request.info.pages.length,
+    signatureCount: prepared.signatureCount,
+  });
   if (
     (await digest(prepared.bytes)) !== intent.outputHash ||
     (await fingerprint(prepared.packet)) !== prepared.packetHash
   )
     throw Error("The document changed. Prepare a new signing request.");
   receipt = approved;
+  handledRequests.add(prepared.requestId);
   download(
     prepared.bytes,
     prepared.request.name.replace(/\.pdf$/i, "") + "-signed.pdf",
@@ -388,6 +402,11 @@ async function notifyAgent() {
   if (!receipt || !prepared?.deliveryHash) return;
   await api("/api/complete", receipt);
   notificationPending = false;
+  try { await updateCachedOutput(receipt.intent.nonce, { notified: true }); }
+  catch {
+    message = "Your agent received completion status. The local recovery status could not be saved.";
+    return;
+  }
   message = "Your PDF is signed. Your agent received completion status only.";
 }
 async function receiveRequest() {
@@ -405,10 +424,17 @@ async function receiveRequest() {
       const inbox = await api("/api/inbox?device=" + device.deviceId);
       const wanted = new URL(location.href).searchParams.get("request");
       const delivery = inbox.requests.find(
-        (r) => !failedRequests.has(r.manifest.route.requestId) && (!wanted || r.manifest.route.requestId === wanted),
+        (r) => !failedRequests.has(r.manifest.route.requestId) && !handledRequests.has(r.manifest.route.requestId) && (!wanted || r.manifest.route.requestId === wanted),
       );
       if (delivery)
         await run(async () => {
+          const requestId = delivery.manifest.route.requestId;
+          if (await hasRequestApproval(requestId)) {
+            handledRequests.add(requestId);
+            if (!(await restoreLocalApproval(requestId)))
+              message = "This request was already approved here. Its recovery copy is unavailable; use the PDF you downloaded.";
+            return;
+          }
           const chunks = [];
           for (let i = 0; i < delivery.manifest.chunks.length; i += 4) {
             const batch = await Promise.all(
@@ -464,7 +490,9 @@ async function receiveRequest() {
     );
   }
 }
-function resetRequest() {
+async function resetRequest() {
+  if (receipt && !notificationPending)
+    await updateCachedOutput(receipt.intent.nonce, { remove: true });
   preview?.destroy();
   preview = null;
   prepared = null;
@@ -476,6 +504,32 @@ function resetRequest() {
   history.replaceState(null, "", url);
   activeUntil = Date.now() + 60000;
   message = "";
+}
+async function restoreLocalApproval(requestId) {
+  if (!device) return false;
+  const wanted = requestId || new URL(location.href).searchParams.get("request");
+  const id = await getRecoveryRequest(wanted);
+  if (!id) return false;
+  const saved = await recoverApprovedOutput(id);
+  if (!saved) return false;
+  receipt = saved.record;
+  handledRequests.add(receipt.intent.requestId);
+  notificationPending = saved.notificationPending;
+  prepared = {
+    bytes: saved.bytes,
+    request: { name: saved.name, info: { pages: Array(saved.pages) }, items: [] },
+    signatureCount: saved.signatureCount,
+    requestId: receipt.intent.requestId,
+    expiresAt: receipt.intent.expiresAt,
+    deliveryHash: receipt.intent.deliveryHash,
+  };
+  message = notificationPending
+    ? "Your approved PDF was recovered. Retry agent notification without signing again."
+    : "Your approved PDF was recovered on this device.";
+  const url = new URL(location.href);
+  url.searchParams.set("request", id);
+  history.replaceState(null, "", url);
+  return true;
 }
 function download(bytes, name, type = "application/pdf") {
   const blob = new Blob([bytes], { type }),
@@ -538,6 +592,8 @@ async function showPreview() {
   section.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 await loadRelay();
+try { await restoreLocalApproval(); }
+catch { error = "The saved PDF could not be recovered. Your approval was preserved; nothing new was signed."; }
 render();
 receiveRequest();
 document.addEventListener("visibilitychange", () => {

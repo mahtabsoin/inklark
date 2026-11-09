@@ -30,7 +30,7 @@ export async function syntheticSigner(origin) {
     },
   };
   let counter = 0;
-  async function assertion(challenge, flags = 5) {
+  async function assertion(challenge, flags = 5, counterValue) {
     const client = utf8(
       JSON.stringify({
         type: "webauthn.get",
@@ -42,7 +42,7 @@ export async function syntheticSigner(origin) {
     const auth = new Uint8Array(37);
     auth.set(unbase64url(await digest(utf8(new URL(origin).hostname))));
     auth[32] = flags;
-    new DataView(auth.buffer).setUint32(33, ++counter);
+    new DataView(auth.buffer).setUint32(33, counterValue ?? ++counter);
     const signature = sign(
       "sha256",
       Buffer.concat([auth, unbase64url(await digest(client))]),
@@ -74,11 +74,11 @@ export async function syntheticSigner(origin) {
     device,
     delivery,
     registration,
-    approve: async (intent) => ({
+    approve: async (intent, { counter } = {}) => ({
       format: "inklark-approval",
       version: 1,
       intent,
-      assertion: await assertion(await approvalChallenge(intent)),
+      assertion: await assertion(await approvalChallenge(intent), 5, counter),
     }),
   };
 }

@@ -58,9 +58,14 @@ try {
   // Apply the packaged migration to a fresh SQLite database independently.
   const db = new DatabaseSync(":memory:");
   try {
-    db.exec(await readFile("drizzle/0000_relay.sql", "utf8"));
+    const journal = JSON.parse(await readFile("drizzle/meta/_journal.json", "utf8"));
+    for (const entry of journal.entries)
+      db.exec(await readFile(`drizzle/${entry.tag}.sql`, "utf8"));
     assert.ok(db.prepare("PRAGMA table_info(requests)").all().some((column) => column.name === "last_cleaned_at"));
     assert.ok(db.prepare("SELECT name FROM sqlite_master WHERE type='index'").all().some((index) => index.name === "approval_once"));
+    const schemaQuery = "SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type,name";
+    const normalize = (rows) => rows.map((row) => ({ ...row, sql: row.sql.replace(/IF NOT EXISTS /gi, "").replace(/\s+/g, " ").trim() }));
+    assert.deepEqual(normalize(db.prepare(schemaQuery).all()), normalize((await store.statement(schemaQuery).all()).results), "Fresh migrations must match the runtime schema");
   } finally { db.close(); }
   console.log("Built Worker checks passed: static routing/CSP, identity required, enrollment disabled, global cleanup, and fresh schema migration. Live gateway and scheduled delivery remain unverified.");
 } finally {

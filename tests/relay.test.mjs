@@ -374,3 +374,51 @@ test("human pairing pin rejects a relay-substituted destination", () => withRela
   const replacement = await syntheticSigner(origin);
   await assert.rejects(() => verifyDeliveryTarget({ ...target, deliveryPublicKey: replacement.device.deliveryPublicKey, fingerprint: pin }, pin), /pairing fingerprint/);
 }));
+
+test("genuine approvals can complete out of order while positive counter reuse fails", () => withRelay(async ({ invoke, api, delivery, target, signer, store }) => {
+  const records = [];
+  for (let i = 0; i < 4; i++) {
+    const next = i === 0 ? delivery : await makeDelivery({ document: `Synthetic counter test ${i}` }, target.deliveryPublicKey, { ...delivery.manifest.route, requestId: randomId() });
+    await deliverRemoteRequest(next, invoke);
+    const intent = {
+      version: 1, requestId: next.manifest.route.requestId,
+      deviceId: target.deviceId, credentialId: signer.device.credential.id,
+      signerName: signer.device.name, appearanceRevision: signer.device.appearanceRevision,
+      documentHash: randomId(), outputHash: randomId(), editsHash: randomId(),
+      deliveryHash: next.deliveryHash, nonce: randomId(), expiresAt: next.manifest.route.expiresAt,
+    };
+    records.push(await signer.approve(intent, i === 2 ? { counter: 3 } : i === 3 ? { counter: 0 } : {}));
+  }
+  assert.equal((await api("/api/complete", records[1])).status, 200);
+  assert.equal((await api("/api/complete", records[0])).status, 200);
+  assert.equal((await store.device("owner")).credential.counter, 3, "Observed maximum must never regress");
+  assert.equal((await api("/api/complete", records[2])).status, 400, "Another valid signature cannot reuse a consumed positive counter");
+  assert.equal((await api("/api/complete", records[3])).status, 400, "A counter cannot become zero after nonzero enrollment");
+  assert.equal((await invoke("get_request_status", { request_id: records[2].intent.requestId })).status, "pending");
+  assert.equal((await api("/api/complete", records[0])).status, 200, "Identical completed retry remains idempotent");
+  const concurrent = [];
+  for (let i = 0; i < 2; i++) {
+    const next = await makeDelivery({ document: `Concurrent synthetic document ${i}` }, target.deliveryPublicKey, { ...delivery.manifest.route, requestId: randomId() });
+    await deliverRemoteRequest(next, invoke);
+    concurrent.push(await signer.approve({ ...records[0].intent, requestId: next.manifest.route.requestId, deliveryHash: next.deliveryHash, nonce: randomId(), outputHash: randomId() }));
+  }
+  const readDevice = store.device.bind(store);
+  let reads = 0, release;
+  const sameSnapshot = new Promise((resolve) => { release = resolve; });
+  store.device = async (owner) => {
+    const snapshot = await readDevice(owner);
+    if (++reads <= 2) {
+      if (reads === 2) release();
+      await sameSnapshot;
+    }
+    return snapshot;
+  };
+  const responses = await Promise.all(concurrent.map((record) => api("/api/complete", record)));
+  assert.deepEqual(responses.map((response) => response.status).sort(), [200, 400]);
+  const retry = concurrent[responses.findIndex((response) => response.status === 400)];
+  assert.equal((await store.request("owner", retry.intent.requestId)).state, "pending");
+  const claimed = await store.statement("SELECT COUNT(*) AS n FROM approval_counters WHERE approval_hash=?", await fingerprint(retry)).first();
+  assert.equal(claimed.n, 0, "The losing counter comparison must consume no counter claim");
+  assert.equal((await api("/api/complete", retry)).status, 200, "The original evidence retries without signing again");
+  assert.equal((await store.device("owner")).credential.counter, 5);
+}));

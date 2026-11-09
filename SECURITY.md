@@ -49,6 +49,10 @@ Requests expire after at most 30 minutes. Completion, dismissal, and expiry make
 
 The preview currently pairs one device and signer per owner. Device recovery, replacement, revocation, and private handwriting integration remain unfinished. A cloud provider receives any document information supplied through its own agent runtime. The relay's encryption does not change that provider relationship.
 
+An approved output and its filename are cached locally under AES-GCM using a separate non-extractable recovery key. The encrypted copy, approval evidence, one-use request and nonce, and counter are committed atomically. Recovery verifies historical evidence and the exact output hash without creating a new authorization. It can download the same output or retry the original notification. The copy becomes unavailable after 30 minutes and is removed on the next app visit; returning to requests after successful notification removes it immediately. Pending notifications keep their copy for that window. The key remains usable by trusted code in the same origin. Approval evidence is retained separately, and browser storage loss still prevents output recovery.
+
+Completion messages can arrive out of authentication order. The relay verifies each request's signature, binding, and expiry, atomically claims each positive counter once, rejects positive counters at or below the enrollment counter, and retains the maximum observed value. Credentials that consistently use zero rely on request binding and one-use state. Counter-claim records survive document-request cleanup. This policy permits reordered delivery and provides no guarantee of detecting cloned credentials. The [WebAuthn counter considerations](https://www.w3.org/TR/webauthn-3/#sctn-sign-counter) identify response ordering as one possible cause of a non-increasing received counter.
+
 ## Reporting
 
 Report vulnerabilities privately to the repository maintainer through GitHub private vulnerability reporting when enabled. Do not include real documents, signature assets, vault passwords, or personal identifiers in public issues. Use synthetic fixtures for reproduction.
