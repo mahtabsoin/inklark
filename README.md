@@ -1,8 +1,8 @@
 # Inklark
 
-Fill PDFs and approve signatures locally, with a small browser workspace and tools for your existing agent. Free software under the MIT license. The app has no paid API, account requirement, or document quotas.
+Fill PDFs and approve signatures locally, with a browser workspace and tools for your existing agent. The local app is free under the MIT license and needs no Inklark account or paid model API.
 
-Your agent prepares the document and flags questions. You review the filled PDF and approve signature placement. The signed PDF downloads directly to you. Agent tools receive a completion receipt.
+Your agent prepares the document and flags questions. You control signature application and receive the completed PDF locally. Agent tools receive a completion receipt.
 
 ![Inklark document workspace](docs/images/workspace.png)
 
@@ -11,6 +11,48 @@ The screenshot uses a sample form and synthetic test data.
 Read [the design decisions](docs/DESIGN.md) for the reasoning behind local storage, human approval, and the agent boundary.
 
 An experimental [device-authenticated signing preview](docs/BUILD-STATUS.md) supports encrypted remote MCP delivery in local automation. A prepared request opens automatically and one authenticated action produces the PDF locally. [Cloud setup and compatibility](docs/REMOTE-SETUP.md), hosted enrollment, unattended cleanup, and physical-phone verification remain release gates. No cloud-agent connection is verified yet. The original editor remains available during development.
+
+## User journey
+
+The intended experience is to give your agent a PDF, resolve any necessary questions, and authenticate once to receive the completed document. You can try the local signing portion today. The cloud-agent connection and physical-phone handoff remain unfinished.
+
+### Set up once
+
+1. Open Inklark on the device where you want to approve documents.
+2. Enter your signing name and set up device authentication. The preview uses your adopted typed name as the signature appearance. Setup currently creates a credential and then verifies it through a second authentication prompt.
+3. In the intended cloud flow, connect your agent and pair it with your approval device. Pairing grants preparation and status access. The private approval credential stays on your device.
+
+### For each document
+
+1. Give your existing agent the PDF and ask it to fill the form using information you have authorized it to use.
+2. The agent preserves existing answers, fills known details, and asks about missing or conflicting information. Sensitive facts need verification before requesting approval.
+3. The agent proposes signature locations and encrypts the prepared request for your paired device. Follow its signing link, or receive the request in an already open Inklark page.
+4. Inklark shows the document name, signer, and signature count. **View document** is optional for a complete request. Choose **Sign this document** and authenticate once, or dismiss the request.
+5. Inklark creates the completed PDF locally and downloads it to you. The agent receives status without receiving your private credential, signature assets, or completed PDF. You can send the downloaded file where it needs to go.
+
+Changing the document, signer, or signature locations requires new approval. Canceling authentication creates no approval. If completion notification fails after approval, the encrypted local recovery copy can restore the identical PDF and retry notification without signing again. Recovery is available for up to 30 minutes, subject to browser storage availability.
+
+### Try the local signing preview
+
+With Node.js 24 or newer installed, run these commands from the repository:
+
+```sh
+npm ci
+npm run dev:relay
+```
+
+Open [the signing preview](http://localhost:4320) in your browser. These local addresses work on the computer running the service.
+
+1. Enter your name and choose **Set up device signing**. Follow your browser's authentication prompts. Available methods depend on your device and passkey provider.
+2. Choose **Try a prepared sample**. This simulates a document your agent has already filled and prepared.
+3. Optionally choose **View document**, then choose **Sign this document** and authenticate.
+4. Open the downloaded PDF and check the filled answer and typed signature.
+5. Reload the signing page and choose **Download PDF again** to recover the same approved file without another authentication.
+6. Choose **Back to requests**. With another sample, try **Dismiss request** or cancel authentication to check the unsigned path.
+
+**Connect your agent** shows the proposed connection instructions; a live cloud connection is still pending. The preview currently supports one signer and paired device. Physical Windows Hello and phone authentication still need verification. For phone QR pairing, both devices need Bluetooth and internet access; follow the phone's passkey prompt after scanning. See [Microsoft's passkey guidance](https://learn.microsoft.com/en-us/windows/security/identity-protection/passkeys/).
+
+The original editor, described below, supports manual filling and an encrypted handwriting vault. Connecting that vault to the new device-authenticated flow remains unfinished. See [the full journey](docs/JOURNEY.md), [current implementation status](docs/BUILD-STATUS.md), and [the acceptance script](docs/ACCEPTANCE.md).
 
 ## Run locally
 
