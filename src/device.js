@@ -344,7 +344,10 @@ export async function enrollDevice(name) {
         name: name.trim(),
         displayName: name.trim(),
       },
-      pubKeyCredParams: [{ type: "public-key", alg: -7 }],
+      pubKeyCredParams: [
+        { type: "public-key", alg: -7 },
+        { type: "public-key", alg: -257 },
+      ],
       authenticatorSelection: {
         residentKey: "required",
         userVerification: "required",
@@ -354,9 +357,10 @@ export async function enrollDevice(name) {
     },
   });
   const publicKey = credential?.response.getPublicKey?.();
-  if (!publicKey || credential.response.getPublicKeyAlgorithm?.() !== -7)
+  const algorithm = credential?.response.getPublicKeyAlgorithm?.();
+  if (!publicKey || ![-7, -257].includes(algorithm))
     throw Error(
-      "This authenticator does not provide a supported ES256 credential. Nothing was enrolled.",
+      "This authenticator does not provide a supported signing credential. Nothing was enrolled.",
     );
   const authData = new Uint8Array(credential.response.getAuthenticatorData());
   if (
@@ -374,6 +378,7 @@ export async function enrollDevice(name) {
     appearanceRevision: randomId(),
     credential: {
       id: credential.id,
+      algorithm,
       publicKey: base64url(publicKey),
       userHandle,
       counter: 0,

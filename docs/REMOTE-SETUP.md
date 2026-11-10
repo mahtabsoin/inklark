@@ -21,10 +21,17 @@ The agent needs access to its own document runtime and connected MCP caller. It 
 | Claude cloud | Protocol can support a client adapter | No live connection tested |
 | Grokbot and Muse | Exact products and artifact capabilities remain unidentified | Unsupported claim withheld |
 | Desktop Chromium/Edge | Automated virtual WebAuthn and PDF download | Virtual-authenticator test passed |
+| Windows Hello | Enrollment offers RS256 alongside ES256; native-crypto and relay tests verify RS256 proofs | Physical-device confirmation pending |
 | Phone viewport | Responsive Chromium layout and the encrypted journey | Physical-phone support unverified |
 | iPhone Safari / Android Chrome | Requires device authentication, storage, opening, and download tests | Pending physical tests |
 
 Host subscriptions, connector permissions, and the agent's own provider processing remain outside Inklark. The core introduces no paid model API. Infrastructure limits and host pricing still apply.
+
+## Passkey setup troubleshooting
+
+Earlier previews requested only ES256 credentials, excluding Windows Hello devices that require RS256. Current builds offer both algorithms and pin the selected type. Microsoft's [WebAuthn sample](https://github.com/azure-ad-b2c/samples/blob/master/policies/fido2/html-templates/self-asserted.html) includes RS256 for Windows Hello compatibility. Rebuild after updating, cancel any older prompt, reload the signing page, and check whether Windows offers the local device or Windows Hello.
+
+The phone QR flow pairs the phone's authenticator with the browser on your computer. Both devices need Bluetooth and internet access, and scanning must lead to a passkey confirmation on the phone. See [Microsoft's passkey guidance](https://learn.microsoft.com/en-us/windows/security/identity-protection/passkeys/). A stalled QR flow alone cannot identify the cause; the phone model, prompt, and connection state still need checking. Physical phone pairing remains unverified.
 
 ## Runtime contract
 

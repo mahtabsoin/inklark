@@ -9,6 +9,7 @@ import {
   verifySavedApprovalRecord,
 } from "../src/device.js";
 import { randomId, sealRequest, digest, utf8 } from "../src/trust.js";
+import { syntheticSigner } from "./relay-fixtures.mjs";
 
 const server = createServer(async (request, response) => {
   const pathname = new URL(request.url, "http://localhost").pathname;
@@ -93,11 +94,31 @@ try {
     };
   }), legacyNonce);
   assert.equal(await page.evaluate(async (nonce) => (await device.getApprovalRecord(nonce)).record.syntheticLegacyFixture, legacyNonce), true, "Schema upgrade preserves earlier approval records");
+  await page.evaluate(() => {
+    const create = navigator.credentials.create.bind(navigator.credentials);
+    navigator.credentials.create = (options) => {
+      window.offeredAlgorithms = options.publicKey.pubKeyCredParams.map((p) => p.alg);
+      return create(options);
+    };
+  });
   const profile = await page.evaluate(async () => {
     const p = await device.enrollDevice("Jane Example");
     return device.publicDevice(p);
   });
   assert.equal(profile.name, "Jane Example");
+  assert.deepEqual(await page.evaluate(() => window.offeredAlgorithms), [-7, -257]);
+  assert.equal(profile.credential.algorithm, -7, "Pin the authenticator's chosen algorithm");
+  const rsaSigner = await syntheticSigner(origin, { algorithm: -257 });
+  const browserRSA = await page.evaluate((registration) => device.verifyDeviceRegistration(registration, location.origin), rsaSigner.registration);
+  assert.equal(browserRSA.credential.algorithm, -257, "Browser Web Crypto must verify RS256 enrollment");
+  const rsaIntent = {
+    version: 1, requestId: randomId(), nonce: randomId(),
+    deviceId: rsaSigner.device.deviceId, credentialId: rsaSigner.device.credential.id,
+    signerName: rsaSigner.device.name, appearanceRevision: rsaSigner.device.appearanceRevision,
+    documentHash: randomId(), outputHash: randomId(), editsHash: randomId(), expiresAt: Date.now() + 60000,
+  };
+  const rsaRecord = await rsaSigner.approve(rsaIntent);
+  assert.equal((await page.evaluate(({ record, credential, intent }) => device.verifyApprovalRecord(record, credential, intent, location.origin), { record: rsaRecord, credential: browserRSA.credential, intent: rsaIntent })).counter, 2);
   const registration = await page.evaluate(async () =>
     device.deviceRegistration(await device.getDevice()),
   );

@@ -11,8 +11,11 @@ import {
   approvalChallenge,
 } from "../src/trust.js";
 
-export async function syntheticSigner(origin) {
-  const key = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+export async function syntheticSigner(origin, { algorithm } = {}) {
+  const key = generateKeyPairSync(
+    algorithm === -257 ? "rsa" : "ec",
+    algorithm === -257 ? { modulusLength: 2048, publicExponent: 65537 } : { namedCurve: "prime256v1" },
+  );
   const delivery = await createDeliveryKey();
   const device = {
     version: 1,
@@ -27,6 +30,7 @@ export async function syntheticSigner(origin) {
         key.publicKey.export({ format: "der", type: "spki" }),
       ),
       backupEligible: false,
+      ...(algorithm === undefined ? {} : { algorithm }),
     },
   };
   let counter = 0;

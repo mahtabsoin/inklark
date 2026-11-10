@@ -102,7 +102,11 @@ test("canonical approval hashes change with document, signer, placement, and req
 });
 
 async function assertionFixture(overrides = {}) {
-  const pair = generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  const rsa = overrides.algorithm === -257;
+  const pair = overrides.pair || generateKeyPairSync(
+    rsa ? "rsa" : "ec",
+    rsa ? { modulusLength: overrides.modulusLength || 2048, publicExponent: 65537 } : { namedCurve: "prime256v1" },
+  );
   const credential = {
     id: randomId(),
     userHandle: randomId(),
@@ -111,6 +115,7 @@ async function assertionFixture(overrides = {}) {
     ),
     counter: 0,
     backupEligible: false,
+    ...(overrides.algorithm === undefined ? {} : { algorithm: overrides.algorithm }),
   };
   const expected = {
     challenge: randomId(),
@@ -143,7 +148,7 @@ async function assertionFixture(overrides = {}) {
       userHandle: credential.userHandle,
     },
   };
-  return { credential, expected, assertion };
+  return { credential, expected, assertion, pair };
 }
 test("ES256 approval verifies a real signature and enforces user verification", async () => {
   const { assertion, credential, expected } = await assertionFixture();
@@ -252,6 +257,34 @@ test("historical evidence verifies signature binding without granting fresh auth
     { ...expected, expiresAt: 0 },
   );
   assert.equal(evidence.signatureVerified, true);
+  assert.equal(evidence.freshAuthorization, false);
+});
+test("RS256 approval supports Windows Hello keys without weakening signature or user checks", async () => {
+  const { assertion, credential, expected, pair } = await assertionFixture({ algorithm: -257 });
+  assert.equal((await verifyApproval(assertion, credential, expected)).counter, 1);
+  await assert.rejects(() => verifyApproval(assertion, { ...credential, algorithm: -7 }, expected));
+  await assert.rejects(() => verifyApproval(assertion, { ...credential, algorithm: -258 }, expected), /algorithm/);
+  await assert.rejects(() => verifyApproval(assertion, { ...credential, algorithm: null }, expected), /algorithm/);
+  await assert.rejects(() => verifyApproval(assertion, { ...credential, counter: 1 }, expected), /already used/);
+  await assert.rejects(() => verifyApproval(assertion, credential, { ...expected, challenge: randomId() }), /operation/);
+  await assert.rejects(() => verifyApproval(assertion, credential, { ...expected, expiresAt: 0 }), /expired/);
+  for (const overrides of [
+    { flags: 1 },
+    { flags: 4 },
+    { flags: 5 | 0x40 },
+    { client: { origin: "https://attacker.example" } },
+    { rpId: "attacker.example" },
+  ]) {
+    const bad = await assertionFixture({ ...overrides, algorithm: -257, pair });
+    await assert.rejects(() => verifyApproval(bad.assertion, bad.credential, bad.expected));
+  }
+  const corrupt = unbase64url(assertion.response.signature);
+  corrupt[0] ^= 1;
+  await assert.rejects(() => verifyApproval({ ...assertion, response: { ...assertion.response, signature: base64url(corrupt) } }, credential, expected), /signature/);
+  await assert.rejects(() => verifyApproval({ ...assertion, response: { ...assertion.response, signature: base64url(corrupt.subarray(1)) } }, credential, expected), /length/);
+  const weak = await assertionFixture({ algorithm: -257, modulusLength: 1024 });
+  await assert.rejects(() => verifyApproval(weak.assertion, weak.credential, weak.expected), /parameters/);
+  const evidence = await verifyApprovalEvidence(assertion, { ...credential, counter: 100 }, { ...expected, expiresAt: 0 });
   assert.equal(evidence.freshAuthorization, false);
 });
 test("delivery accepts a base64-sized 30 MiB PDF and rejects oversized plaintext before encryption", async () => {

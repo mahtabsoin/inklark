@@ -256,23 +256,38 @@ async function verifyAssertion(assertion, credential, expected, live) {
   );
   if (live && (counter || credential.counter) && counter <= credential.counter)
     throw Error("This authenticator response was already used.");
+  const algorithm = credential.algorithm === undefined ? -7 : credential.algorithm;
+  if (![-7, -257].includes(algorithm))
+    throw Error("Unsupported approval key algorithm.");
+  const rsa = algorithm === -257;
   const key = await crypto.subtle.importKey(
     "spki",
     unbase64url(credential.publicKey, 1024),
-    { name: "ECDSA", namedCurve: "P-256" },
+    rsa
+      ? { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }
+      : { name: "ECDSA", namedCurve: "P-256" },
     false,
     ["verify"],
   );
+  if (
+    rsa &&
+    (key.algorithm.modulusLength < 2048 || key.algorithm.modulusLength > 4096 ||
+      base64url(key.algorithm.publicExponent) !== "AQAB")
+  )
+    throw Error("Unsupported RSA approval key parameters.");
   const clientHash = new Uint8Array(
     await crypto.subtle.digest("SHA-256", clientBytes),
   );
   const signed = new Uint8Array(data.length + clientHash.length);
   signed.set(data);
   signed.set(clientHash, data.length);
+  const signature = unbase64url(response.signature, rsa ? 512 : 72);
+  if (rsa && signature.length !== key.algorithm.modulusLength / 8)
+    throw Error("Invalid RSA approval signature length.");
   const valid = await crypto.subtle.verify(
-    { name: "ECDSA", hash: "SHA-256" },
+    rsa ? "RSASSA-PKCS1-v1_5" : { name: "ECDSA", hash: "SHA-256" },
     key,
-    es256Signature(unbase64url(response.signature, 72)),
+    rsa ? signature : es256Signature(signature),
     signed,
   );
   if (!valid) throw Error("The approval signature is invalid.");

@@ -269,7 +269,7 @@ test("durable relay isolates owners, authenticates enrollment and completion, an
   }
 });
 
-async function withRelay(fn) {
+async function withRelay(fn, { algorithm } = {}) {
   const parent = path.resolve(".local"), directory = path.join(parent, "relay-test-" + randomUUID());
   const store = await nodeRelayStore(directory);
   let clock = Date.now();
@@ -286,7 +286,7 @@ async function withRelay(fn) {
     return JSON.parse(result.content[0].text);
   };
   try {
-    const signer = await syntheticSigner(origin);
+    const signer = await syntheticSigner(origin, { algorithm });
     assert.equal((await api("/api/device", signer.registration)).status, 201);
     const target = await invoke("get_signing_device");
     const delivery = await makeDelivery({ privateAnswer: "synthetic-private-marker" }, target.deliveryPublicKey, {
@@ -321,6 +321,23 @@ test("adapter resumes a lost finish response without reopening uploads", () => w
   const row = await store.request("owner", resumed.requestId);
   assert.equal(JSON.stringify(row).includes("synthetic-private-marker"), false);
 }));
+
+test("relay verifies RS256 enrollment and request approval", () => withRelay(async ({ api, invoke, delivery, signer, target }) => {
+  await deliverRemoteRequest(delivery, invoke);
+  const intent = {
+    version: 1, requestId: delivery.manifest.route.requestId,
+    deviceId: target.deviceId, credentialId: signer.device.credential.id,
+    signerName: signer.device.name, appearanceRevision: signer.device.appearanceRevision,
+    documentHash: randomId(), outputHash: randomId(), editsHash: randomId(),
+    deliveryHash: delivery.deliveryHash, nonce: randomId(), expiresAt: delivery.manifest.route.expiresAt,
+  };
+  const record = await signer.approve(intent);
+  const changed = structuredClone(record);
+  changed.intent.outputHash = randomId();
+  assert.equal((await api("/api/complete", changed)).status, 400);
+  assert.equal((await api("/api/complete", record)).status, 200);
+  assert.equal((await invoke("get_request_status", { request_id: intent.requestId })).status, "completed");
+}, { algorithm: -257 }));
 
 for (const closeBy of ["expiry", "cancel"]) {
   test(`late upload after ${closeBy} cleanup cannot leave ciphertext behind`, () => withRelay(async ({ store, api, invoke, delivery, advance, now }) => {
